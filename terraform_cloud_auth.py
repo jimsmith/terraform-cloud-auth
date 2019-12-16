@@ -63,7 +63,7 @@ class TerraformWorkspace:
             return(json.loads(response.content)['data']['id'])
         
         elif response.status_code == 404:
-            print(logger.error(f"Workspace {self.workspace_name} Not Found]"))
+            print(logger.error(f"Workspace {self.workspace_name} Not Found"))
 
     # Create environment variable
     def create_var(self, var_key, var_value):
@@ -147,6 +147,8 @@ class TerraformWorkspace:
         )
         if response.status_code == 200:
             logger.info(f"Updated variable {var_key} in place")
+        else:
+            logger.error(response.status_code)
 
 
 def list_secrets(region, prefix): 
@@ -187,7 +189,23 @@ def get_sts_credentials(region, key):
         aws_secret_access_key = key['AWS_SECRET_ACCESS_KEY']
     )
     sts_token = client.get_session_token()
+    logger.info(f"Fetching STS credentials using key ID {key['AWS_ACCESS_KEY_ID']}")
     return sts_token
+
+def test_sts_credentials(region, key, secret, token): 
+    # Create an STS client
+    logger.info(f"Testing STS credentials")
+    session = boto3.session.Session()
+    client  = session.client(
+        service_name          = 'sts',
+        region_name           = region,
+        aws_access_key_id     = key,
+        aws_secret_access_key = secret,
+        aws_session_token     = token
+    )
+    caller = client.get_caller_identity()
+    logger.info(f"STS caller identity is {caller['Arn']}")
+    return caller['ResponseMetadata']['HTTPStatusCode']
 
 def main():
     # For every secret in AWS SM with the specified prefix...
@@ -209,27 +227,32 @@ def main():
                     tfc_key_name, 
                     region)['api_key'])
 
-            # Create variables
-            workspace.create_var(
-                "AWS_ACCESS_KEY_ID", 
-                get_sts_credentials(region, 
-                    get_secret(
-                        secret['Name'],
-                        region))['Credentials']['AccessKeyId'])
-            workspace.create_var(
-                "AWS_SECRET_ACCESS_KEY", 
-                get_sts_credentials(
-                    region, 
-                    get_secret(
-                        secret['Name'], 
-                        region))['Credentials']['SecretAccessKey'])
-            workspace.create_var(
-                "AWS_SESSION_TOKEN", 
-                get_sts_credentials(
-                    region, 
-                    get_secret(
-                        secret['Name'], 
-                        region))['Credentials']['SessionToken'])
+            # Fetch STS Credentials
+            sts_credentials = get_sts_credentials(
+                region,
+                get_secret(
+                    secret['Name'],
+                    region)
+                    )['Credentials']
+
+            # Test STS Credentials to ensure they work
+            sts_test = test_sts_credentials(
+                        region,
+                        sts_credentials['AccessKeyId'],
+                        sts_credentials['SecretAccessKey'],
+                        sts_credentials['SessionToken'])
+            
+            if sts_test == 200:
+                # Create variables
+                workspace.create_var(
+                    "AWS_ACCESS_KEY_ID", sts_credentials['AccessKeyId'])
+                workspace.create_var(
+                    "AWS_SECRET_ACCESS_KEY", sts_credentials['SecretAccessKey'])
+                workspace.create_var(
+                    "AWS_SESSION_TOKEN", sts_credentials['SessionToken'])
+            else:
+                logger.error(f"STS Credentials Invalid")
+
 
 def lambda_handler(event, context):
     main()
