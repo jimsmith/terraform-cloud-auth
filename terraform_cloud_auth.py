@@ -7,10 +7,10 @@
 #
 # "AWS_ACCESS_KEY_ID"
 # "AWS_SECRET_ACCESS_KEY"
-# "TERRAFORM_WORKSPACE_NAME"
+# "TERRAFORM_WORKSPACE_PREFIX"
 #
-# TERRAFORM_WORKSPACE_NAME can be a single value, or a comma seperated 
-# list of workspaces that share the same API keys for authentication. 
+# TERRAFORM_WORKSPACE_PREFIX is a prefix string attached to the 
+# workspaces that share the same API keys for authentication. 
 # This is useful for workspaces that share the same account but serve
 # multiple regions.
 #
@@ -38,8 +38,50 @@ import requests
 import sys
 import logging
 
+
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
+
+class TerraformOrganization:
+    def __init__(self, organization_name, token):
+        self.organization_name = organization_name
+        self.token             = token
+        self.headers           = { 'Authorization': f"Bearer {token}",
+                                   'Content-Type': 'application/vnd.api+json'
+                                }
+        self.validate_org()
+
+    # Validate the org to make sure it exists and the API key works for it. 
+    def validate_org(self):
+        logger.info(f"Verifying org {self.organization_name} is valid")
+        response      = requests.get(
+        f"https://app.terraform.io/api/v2/organizations/{self.organization_name}/",
+        headers = self.headers
+        )
+            
+        if response.status_code == 200:
+            logger.info(f"Organization {self.organization_name} is valid")
+        
+        else:
+            logger.error(f"Organization {self.organization_name} Not Found or API key invalid")
+            sys.exit()
+
+    # Return a list of workspaces for the given organization. 
+    def get_workspaces(self):
+        logger.info(f"Getting list of workspaces for {self.organization_name}")
+        response      = requests.get(
+        f"https://app.terraform.io/api/v2/organizations/{self.organization_name}/workspaces",
+        headers = self.headers
+        )
+        workspaces = []
+        if response.status_code == 200:
+            for workspace in json.loads(response.content)['data']:
+                workspaces.append(workspace['attributes']['name'])
+            return workspaces
+        
+        else:
+            logger.error(f"Unable to get workspaces for {self.organization_name}")
+            sys.exit()
 
 class TerraformWorkspace: 
     def __init__(self, workspace_name, organization_name, token): 
@@ -49,6 +91,7 @@ class TerraformWorkspace:
         self.headers           = { 'Authorization': f"Bearer {token}",
                                     'Content-Type': 'application/vnd.api+json'
                                 }
+        self.workspace_id      = self.id()
 
     # Get workspace ID
     def id(self):
@@ -63,7 +106,7 @@ class TerraformWorkspace:
             return(json.loads(response.content)['data']['id'])
         
         elif response.status_code == 404:
-            print(logger.error(f"Workspace {self.workspace_name} Not Found"))
+            logger.error(f"Workspace {self.workspace_name} Not Found")
 
     # Create environment variable
     def create_var(self, var_key, var_value):
@@ -81,7 +124,7 @@ class TerraformWorkspace:
                 "relationships": {
                     "workspace": {
                         "data": {
-                            "id"  : self.id(),
+                            "id"  : self.workspace_id,
                             "type": "workspaces"
                         }
                     }
@@ -208,15 +251,28 @@ def test_sts_credentials(region, key, secret, token):
     return caller['ResponseMetadata']['HTTPStatusCode']
 
 def main():
+    # Instantiate organization
+    organization = TerraformOrganization(
+        tfc_organization,
+        get_secret(
+                tfc_key_name, 
+                region)['api_key'])
+
+    ws_list = organization.get_workspaces()
+
     # For every secret in AWS SM with the specified prefix...
     for secret in list_secrets(region, secret_prefix):
         # Get the workspaces the secret should be applied to
         logger.info(f" -- Processing secret {secret['Name']}")
-        ws_name = get_secret(
+        ws_prefix = get_secret(
             secret['Name'], 
-            region)['TERRAFORM_WORKSPACE_NAME'].replace(" ","")
-        workspaces = ws_name.split(",")
-        
+            region)['TERRAFORM_WORKSPACE_PREFIX']
+        logger.info(f"Workspace prefix is {ws_prefix}")
+
+       # Set the workspaces which match the AWS SM prefix
+        workspaces = [i for i in ws_list if i.startswith(ws_prefix)]
+        logger.info(f"Attempting to update credentials for workspaces {workspaces}")
+
         # Instantiate workspace
         for workspace in workspaces:
             logger.info(f"Processing workspace {workspace}")
@@ -258,4 +314,5 @@ def lambda_handler(event, context):
     main()
 
 if __name__ == '__main__':
+    logging.basicConfig()
     main()
