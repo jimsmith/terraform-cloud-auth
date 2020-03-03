@@ -28,7 +28,7 @@ secret_prefix = 'terraform_auth'
 tfc_key_name  = 'terraform_cloud_api'
 
 # Set Terraform Cloud Organization Name 
-tfc_organization = 'OrgName'
+tfc_organization = 'AvayaCloud'
 
 ## End of Configuration ##
 
@@ -221,35 +221,6 @@ def get_secret(name, region):
     # AWS returns SecretString as a string literal, convert to json.
     return json.loads(get_secret_value_response['SecretString'])
 
-
-def get_sts_credentials(region, key): 
-    # Create an STS client
-    session = boto3.session.Session()
-    client  = session.client(
-        service_name          = 'sts',
-        region_name           = region,
-        aws_access_key_id     = key['AWS_ACCESS_KEY_ID'],
-        aws_secret_access_key = key['AWS_SECRET_ACCESS_KEY']
-    )
-    sts_token = client.get_session_token()
-    logger.info(f"Fetching STS credentials using key ID {key['AWS_ACCESS_KEY_ID']}")
-    return sts_token
-
-def test_sts_credentials(region, key, secret, token): 
-    # Create an STS client
-    logger.info(f"Testing STS credentials")
-    session = boto3.session.Session()
-    client  = session.client(
-        service_name          = 'sts',
-        region_name           = region,
-        aws_access_key_id     = key,
-        aws_secret_access_key = secret,
-        aws_session_token     = token
-    )
-    caller = client.get_caller_identity()
-    logger.info(f"STS caller identity is {caller['Arn']}")
-    return caller['ResponseMetadata']['HTTPStatusCode']
-
 def main():
     # Instantiate organization
     organization = TerraformOrganization(
@@ -283,31 +254,14 @@ def main():
                     tfc_key_name, 
                     region)['api_key'])
 
-            # Fetch STS Credentials
-            sts_credentials = get_sts_credentials(
-                region,
-                get_secret(
-                    secret['Name'],
-                    region)
-                    )['Credentials']
+            # Get IAM keys from AWS Secret Manager
+            iam_keys = get_secret(secret['Name'],region)
 
-            # Test STS Credentials to ensure they work
-            sts_test = test_sts_credentials(
-                        region,
-                        sts_credentials['AccessKeyId'],
-                        sts_credentials['SecretAccessKey'],
-                        sts_credentials['SessionToken'])
-            
-            if sts_test == 200:
-                # Create variables
-                workspace.create_var(
-                    "AWS_ACCESS_KEY_ID", sts_credentials['AccessKeyId'])
-                workspace.create_var(
-                    "AWS_SECRET_ACCESS_KEY", sts_credentials['SecretAccessKey'])
-                workspace.create_var(
-                    "AWS_SESSION_TOKEN", sts_credentials['SessionToken'])
-            else:
-                logger.error(f"STS Credentials Invalid")
+            # Create variables in TF Cloud Workspace
+            workspace.create_var(
+                "AWS_ACCESS_KEY_ID", iam_keys['AWS_ACCESS_KEY_ID'])
+            workspace.create_var(
+                "AWS_SECRET_ACCESS_KEY", iam_keys['AWS_SECRET_ACCESS_KEY'])
 
 
 def lambda_handler(event, context):
