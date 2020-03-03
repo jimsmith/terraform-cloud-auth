@@ -28,7 +28,7 @@ secret_prefix = 'terraform_auth'
 tfc_key_name  = 'terraform_cloud_api'
 
 # Set Terraform Cloud Organization Name 
-tfc_organization = 'AvayaCloud'
+tfc_organization = "OrgName"
 
 ## End of Configuration ##
 
